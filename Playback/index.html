@@ -57,6 +57,10 @@
     display: block;
   }
   .hidden { visibility: hidden; }
+  /* Covered rather than removed: the scene underneath is still painted, and another one
+     sits on top of it. That is how a real site stacks scenes, and a browser treats it
+     differently from a picture taken off the screen entirely. */
+  .covered { visibility: visible; }
   #label {
     position: absolute;
     left: 10px;
@@ -431,8 +435,18 @@ and not about this phone. Worth running it again without leaving the page.</p>
 
   function show(which) {
     [sceneA, sceneB, move, still].forEach(function (el) {
+      el.classList.remove('covered');
       el.classList.toggle('hidden', el !== which);
     });
+  }
+
+  /** Shows one scene with another left painted underneath it, rather than taken away. */
+  function showOverTheTopOf(front, behind) {
+    [sceneA, sceneB, move, still].forEach(function (el) {
+      el.classList.remove('covered');
+      el.classList.toggle('hidden', el !== front && el !== behind);
+    });
+    behind.classList.add('covered');
   }
 
   // ---- check 1 --------------------------------------------------------------
@@ -728,28 +742,104 @@ and not about this phone. Worth running it again without leaving the page.</p>
 
     var since = function () { return Math.round(performance.now() - startedAt) / 1000; };
 
-    // ---- is a hidden video allowed to keep playing --------------------------
-    // Scene 1 has been behind scene 2 since the camera move. Before counting anything,
-    // find out whether being behind another scene is by itself enough to stop it.
-    show(sceneB);
-    if (sceneA.paused) {
-      rewind(sceneA);
-      try { await sceneA.play(); } catch (e) { /* reported below */ }
+    // ---- is a covered video allowed to keep playing -------------------------
+    // Four things fit "the playhead stopped moving", and they are not the same thing to
+    // build against: it halted; it kept playing while its clock froze, and would jump
+    // forward when revealed; it slowed rather than stopped; or it is only the way this
+    // page hides a scene, which is not how a site stacks them. So this asks over five
+    // seconds rather than one, counts pictures as well as reading the clock, reads the
+    // clock again the instant the scene comes back, and runs the whole thing both ways.
+    async function howACoveredSceneBehaves(coverItUp, label) {
+      label && (labelText(label));
+      show(sceneA);
+      if (sceneA.paused) {
+        rewind(sceneA);
+        try { await sceneA.play(); } catch (e) { /* reported by the verdict */ }
+      }
+      await wait(400);
+
+      // Added up as it goes, not measured from one end to the other. Five seconds of a
+      // 4.75 second clip takes the playhead right past the start and back to almost
+      // where it began, so the difference between two readings is nearly zero whether it
+      // played the whole way round or never moved at all. The first version of this
+      // check read that as "it stopped" while the browser was decoding 114 pictures.
+      var playedFor = 0;
+      var lastSeen = sceneA.currentTime;
+      var addItUp = function () {
+        var now = sceneA.currentTime;
+        var span = sceneA.duration || 0;
+        playedFor += now < lastSeen ? Math.max(0, span - lastSeen) + now : now - lastSeen;
+        lastSeen = now;
+      };
+      sceneA.addEventListener('timeupdate', addItUp);
+
+      var clockBefore = sceneA.currentTime;
+      var framesBefore = framesOf(sceneA);
+      var whenCovered = performance.now();
+      coverItUp();
+      await wait(5000);
+      addItUp();
+      sceneA.removeEventListener('timeupdate', addItUp);
+      var clockWhileCovered = sceneA.currentTime;
+      var framesWhileCovered = framesOf(sceneA);
+      var pausedWhileCovered = sceneA.paused;
+
+      // Read the instant it comes back, before it has a chance to catch up.
+      show(sceneA);
+      var clockOnReveal = sceneA.currentTime;
+      var coveredForSeconds = Math.round(performance.now() - whenCovered) / 1000;
+
+      var moved = Math.round(playedFor * 100) / 100;
+      var jumped = Math.round((clockOnReveal - clockWhileCovered) * 100) / 100;
+      return {
+        how: label,
+        coveredForSeconds: coveredForSeconds,
+        secondsItPlayedFor: moved,
+        clockWentFrom: Math.round(clockBefore * 100) / 100,
+        clockEndedAt: Math.round(clockWhileCovered * 100) / 100,
+        clockJumpedOnRevealBy: jumped,
+        picturesDecoded:
+          framesBefore === null || framesWhileCovered === null
+            ? null
+            : framesWhileCovered - framesBefore,
+        wasPaused: pausedWhileCovered,
+        // Kept apart on purpose: a crawl and a halt are different answers, and the old
+        // check asked for a tenth of a second in three short windows, which scored them
+        // the same.
+        reading:
+          pausedWhileCovered ? 'the browser paused it'
+          : moved >= coveredForSeconds * 0.9 ? 'it kept playing'
+          : moved > 0.2 ? 'it slowed down'
+          : jumped > 1 ? 'its clock froze while it ran on'
+          : 'it stopped'
+      };
     }
-    var hiddenSurvived = !(await sceneOneStopped()) && !(await sceneOneStopped());
-    var hiddenState = howSceneOneIs();
-    report.whileHidden = hiddenState;
+
+    function labelText(text) { label.textContent = text; }
+
+    var takenOffTheScreen = await howACoveredSceneBehaves(function () {
+      show(sceneB);
+    }, 'taken off the screen');
+
+    var paintedButCovered = await howACoveredSceneBehaves(function () {
+      showOverTheTopOf(sceneB, sceneA);
+    }, 'covered by another scene');
+
+    report.whileCovered = { takenOffTheScreen: takenOffTheScreen, paintedButCovered: paintedButCovered };
+
+    var bothKeptPlaying =
+      takenOffTheScreen.reading === 'it kept playing' && paintedButCovered.reading === 'it kept playing';
     settle(
       'hidden-keeps-playing',
-      hiddenSurvived ? 'yes' : 'no',
-      hiddenSurvived
-        ? 'Scene 1 kept playing with scene 2 in front of it.'
-        : 'The browser stopped scene 1 as soon as scene 2 covered it, with ' +
-          hiddenState.clipLeft + ' seconds of it left.'
+      bothKeptPlaying ? 'yes' : 'no',
+      bothKeptPlaying
+        ? 'Scene 1 kept playing both ways, taken off the screen and covered by scene 2.'
+        : 'Taken off the screen, ' + takenOffTheScreen.reading + ' (' +
+          takenOffTheScreen.secondsItPlayedFor + 's of ' + takenOffTheScreen.coveredForSeconds +
+          '). Covered by scene 2, ' + paintedButCovered.reading + ' (' +
+          paintedButCovered.secondsItPlayedFor + 's).'
     );
 
-    // Everything below needs a scene that is allowed to play, so scene 1 comes back to
-    // the front and starts again.
     show(sceneA);
     rewind(sceneA);
     try { await sceneA.play(); } catch (e) { /* the control arm below will show it */ }
