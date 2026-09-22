@@ -375,14 +375,67 @@ and not about this phone. Worth running it again without leaving the page.</p>
     });
   }
 
-  function advanced(video, overMs) {
-    // True if the playhead really moved. A paused or finished video never counts.
-    var before = video.currentTime;
+  /**
+   * How many seconds of video actually played during a stretch of time.
+   *
+   * Added up as it goes, never taken as the difference between two readings. A clip
+   * shorter than the stretch runs right round and comes back to near where it started,
+   * so the difference between the ends is small whether it played the whole way or
+   * never moved at all. That mistake has been found three times in this page: in the
+   * running count, in the covered-scene check, and in the test that admits a clip to
+   * the counting. This is the one place it can be made, so it is the one place it has
+   * to be right.
+   */
+  // Marked on a video just before the page rewinds it on purpose, so a rewind the page
+  // asked for is never counted as the video having gone round. Lives out here because
+  // both the rewinding and the measuring need it.
+  var deliberateRewind = new WeakSet();
+  function rewind(video) {
+    if (video.currentTime > 0.3) deliberateRewind.add(video);
+    video.currentTime = 0;
+  }
+
+  function playedFor(video, overMs) {
+    var total = 0;
+    var lastSeen = video.currentTime;
+    var laps = 0;
+    function addItUp() {
+      var now = video.currentTime;
+      var span = video.duration || 0;
+      if (now < lastSeen) {
+        // A rewind the page asked for is not a lap, and crediting it would hand back
+        // seconds that never played. The covered-scene check runs where the watchdog
+        // rewinds constantly, which is exactly where that would matter.
+        if (deliberateRewind.has(video)) {
+          deliberateRewind.delete(video);
+        } else {
+          laps += 1;
+          total += Math.max(0, span - lastSeen) + now;
+        }
+      } else {
+        total += now - lastSeen;
+      }
+      lastSeen = now;
+    }
+    video.addEventListener('timeupdate', addItUp);
     return wait(overMs).then(function () {
-      // A tenth of a second, not a hundredth. A video being taken away and restarted
-      // over and over gains a frame or two between each, and that must not read as
-      // playing normally.
-      return !video.paused && video.currentTime > before + 0.15;
+      addItUp();
+      video.removeEventListener('timeupdate', addItUp);
+      // A total longer than the time it had cannot be right, whatever produced it. The
+      // allowance scales with the window: a flat second let a half-second window report
+      // three times real time before it objected.
+      var hadSeconds = overMs / 1000;
+      var impossible = total > hadSeconds * 1.25 + 0.2;
+      return { seconds: Math.round(total * 100) / 100, laps: laps, impossible: impossible };
+    });
+  }
+
+  function advanced(video, overMs) {
+    // True if the video really played. A paused video never counts, and neither does
+    // a total that could not have happened in the time available.
+    if (video.paused) return wait(overMs).then(function () { return false; });
+    return playedFor(video, overMs).then(function (played) {
+      return !video.paused && !played.impossible && played.seconds > 0.15;
     });
   }
 
@@ -450,8 +503,21 @@ and not about this phone. Worth running it again without leaving the page.</p>
   }
 
   // ---- check 1 --------------------------------------------------------------
-  // Asked on the page's own first moment, before anything has been touched.
-  var startedByItself = sceneA.play().then(function () { return true; }, function () { return false; });
+  // Asked on the page's own first moment, before anything has been touched. Whether the
+  // browser refused is recorded here and nowhere else: a refusal is the one clean answer
+  // to this question, and it is gone by the time anything else has happened.
+  var howItAnsweredPlay = { refused: null, refusalWas: null };
+  var startedByItself = sceneA.play().then(
+    function () {
+      howItAnsweredPlay.refused = false;
+      return true;
+    },
+    function (why) {
+      howItAnsweredPlay.refused = true;
+      howItAnsweredPlay.refusalWas = why && why.name ? why.name : String(why);
+      return false;
+    },
+  );
 
   // ---- the run --------------------------------------------------------------
   async function run() {
@@ -459,29 +525,57 @@ and not about this phone. Worth running it again without leaving the page.</p>
     report.touchWasNeeded = !(await startedByItself);
 
     // 1
+    // Three separate questions, asked in order, because collapsing them is what made
+    // this check useless the first time round:
+    //   did the clip arrive at all
+    //   was the start refused
+    //   and did the picture then move
+    // A clip still downloading and a browser refusing to play produce the same silence,
+    // and on a phone's first visit over a mobile connection the first is far more
+    // likely. Only a refusal justifies saying this phone will not start video.
     label.textContent = 'scene 1';
     show(sceneA);
-    if (report.touchWasNeeded) {
-      try { await sceneA.play(); } catch (e) { /* the check below reports it */ }
-    }
-    // Given time to arrive before it is judged. On a cold start the clip can still be
-    // downloading, and a video that has not arrived has not refused to play: reading
-    // that as "this phone will not start video on its own" is the wrong finding
-    // entirely, and it is the most likely one to happen on a phone's first visit.
+
     var arrived = await ready(sceneA, 3, 30000);
-    var playing = arrived && (await advanced(sceneA, 600));
+    report.touchWasNeeded = howItAnsweredPlay.refused === true;
+
+    if (arrived && howItAnsweredPlay.refused) {
+      // Asked again now it has something to play, in case the first refusal was only
+      // about having nothing ready. The second answer is the one that counts: asking
+      // and then deciding from the first answer anyway makes the retry pointless.
+      try {
+        await sceneA.play();
+        howItAnsweredPlay.refusedAgainAfterLoading = false;
+      } catch (e) {
+        howItAnsweredPlay.refusedAgainAfterLoading = true;
+      }
+    }
+    var reallyRefused =
+      howItAnsweredPlay.refused &&
+      howItAnsweredPlay.refusedAgainAfterLoading !== false;
+
+    // Two seconds, not six tenths. A video that starts slowly is not a video that will
+    // not start, and the shorter window cannot tell them apart.
+    var playing = arrived && (await advanced(sceneA, 2000));
+    report.whenAskedToStart = arrived ? howSceneOneIs() : null;
+    report.howItAnsweredPlay = howItAnsweredPlay;
+
     settle(
       'starts-by-itself',
-      !arrived ? 'unknown' : playing && !report.touchWasNeeded ? 'yes' : 'no',
-      report.touchWasNeeded
-        ? (playing
-            ? 'Needed a touch first, then played. The site must start on the first tap.'
-            : 'Would not play even after a touch.')
-        : !arrived
-          ? 'The first clip had not arrived in time, so this was not tested.'
+      !arrived ? 'unknown'
+      : reallyRefused ? 'no'
+      : playing ? 'yes'
+      : 'unknown',
+      !arrived
+        ? 'The first clip had not arrived in time, so this was not tested.'
+        : reallyRefused
+          ? 'The browser refused to start it' +
+            (howItAnsweredPlay.refusalWas ? ' (' + howItAnsweredPlay.refusalWas + ')' : '') +
+            '. The site must start on the first tap.'
           : playing
             ? 'Played on its own, with no touch.'
-            : 'Was allowed to start but never moved.'
+            : 'It was allowed to start and then did not move, which is not the same as a ' +
+              'refusal. Nothing here says whether this phone will start video.'
     );
 
     // 2
@@ -602,17 +696,14 @@ and not about this phone. Worth running it again without leaving the page.</p>
     // A loop is counted by the playhead jumping backwards, which happens whether the
     // browser pauses at the end or carries straight on. Counting pauses missed every
     // loop Chromium made.
-    // Marked on a video just before the page rewinds it on purpose, so the page's own
-    // rewind is not counted as the video having reached its end. Two of these happen
-    // before the counting even starts, and they were being added to both engines' counts.
-    var deliberateRewind = new WeakSet();
-    function rewind(video) {
-      if (video.currentTime > 0.3) deliberateRewind.add(video);
+    // Scene 1's rewinds go in the event log as well, so they can be told apart by eye.
+    var plainRewind = rewind;
+    rewind = function (video) {
       if (video === sceneA) {
         eventLog.push('the page rewound it at ' + Math.round(performance.now() - startedAt) + 'ms');
       }
-      video.currentTime = 0;
-    }
+      plainRewind(video);
+    };
 
     // One record per video, so a guard that never fires can be told from one that is
     // never even close to firing.
@@ -688,59 +779,21 @@ and not about this phone. Worth running it again without leaving the page.</p>
     }
 
     async function howManyRunning(videos) {
-      var before = videos.map(function (v) { return v.currentTime; });
+      // Each one asked the same way as everything else in this page: how much did it
+      // actually play, added up as it went. Nothing here measures a playhead by taking
+      // the difference between two readings, because two of these clips are shorter
+      // than the window and would come back round to where they started.
       var framesBefore = videos.map(framesOf);
-      // Three tenths of a second, not a half. The shortest clips here are 0.71 seconds,
-      // and over half a second one of them can come back round to within a fifth of a
-      // second of where it started. Over three tenths the smallest honest move is 0.3.
-      await wait(300);
+      var played = await Promise.all(videos.map(function (v) { return playedFor(v, 500); }));
       return videos.filter(function (v, at) {
         if (v.paused) return false;
-        // Either sign is enough, because neither is trustworthy alone. Some browsers
-        // report no picture count at all, and a clip under a second long goes round
-        // several times inside the half second this waits, so its playhead can land
-        // behind where it started. A stopped video shows neither sign.
+        if (played[at].impossible) return false;
         var framesNow = framesOf(v);
         var moreFrames =
           framesNow !== null && framesBefore[at] !== null && framesNow > framesBefore[at];
-        return moreFrames || Math.abs(v.currentTime - before[at]) > 0.12;
+        return moreFrames || played[at].seconds > 0.12;
       }).length;
     }
-
-    function howSceneOneIs() {
-      // Every raw number, kept apart on purpose. The download margin and the amount of
-      // clip left are the same figure only when the whole file is already downloaded,
-      // and that is exactly the case that reads as if the video had been starved.
-      return {
-        ended: sceneA.ended,
-        paused: sceneA.paused,
-        loop: sceneA.loop,
-        currentTime: Math.round(sceneA.currentTime * 100) / 100,
-        duration: Math.round(sceneA.duration * 100) / 100,
-        clipLeft: Math.round((sceneA.duration - sceneA.currentTime) * 100) / 100,
-        downloadMargin: secondsInHand(sceneA),
-        readyState: sceneA.readyState,
-        networkState: sceneA.networkState,
-        seekableEnd: sceneA.seekable.length > 0 ? Math.round(sceneA.seekable.end(0) * 100) / 100 : null,
-        errorCode: sceneA.error ? sceneA.error.code : null,
-        wraps: wraps,
-        loopsPutRight: loopsPutRight,
-        loopsThatPausedThenCarriedOn: loopsPausedThenResumed,
-        tooSoonToBeALoop: tooSoonToBeALoop,
-        events: eventLog.slice(-60)
-      };
-    }
-
-    // Asked twice. A video can miss a single moment while another one is settling in,
-    // and one missed moment is not the same as being stopped.
-    async function sceneOneStopped() {
-      // Three chances, because a loop being put right costs one of them.
-      if (await advanced(sceneA, 300)) return false;
-      if (await advanced(sceneA, 600)) return false;
-      return !(await advanced(sceneA, 600));
-    }
-
-    var since = function () { return Math.round(performance.now() - startedAt) / 1000; };
 
     // ---- is a covered video allowed to keep playing -------------------------
     // Four things fit "the playhead stopped moving", and they are not the same thing to
@@ -758,28 +811,14 @@ and not about this phone. Worth running it again without leaving the page.</p>
       }
       await wait(400);
 
-      // Added up as it goes, not measured from one end to the other. Five seconds of a
-      // 4.75 second clip takes the playhead right past the start and back to almost
-      // where it began, so the difference between two readings is nearly zero whether it
-      // played the whole way round or never moved at all. The first version of this
-      // check read that as "it stopped" while the browser was decoding 114 pictures.
-      var playedFor = 0;
-      var lastSeen = sceneA.currentTime;
-      var addItUp = function () {
-        var now = sceneA.currentTime;
-        var span = sceneA.duration || 0;
-        playedFor += now < lastSeen ? Math.max(0, span - lastSeen) + now : now - lastSeen;
-        lastSeen = now;
-      };
-      sceneA.addEventListener('timeupdate', addItUp);
-
       var clockBefore = sceneA.currentTime;
       var framesBefore = framesOf(sceneA);
       var whenCovered = performance.now();
       coverItUp();
-      await wait(5000);
-      addItUp();
-      sceneA.removeEventListener('timeupdate', addItUp);
+      // The same stretch of time measures both, so the amount it played and the time it
+      // had to play in are the same number of seconds apart.
+      var played = await playedFor(sceneA, 5000);
+      var coveredForSeconds = Math.round(performance.now() - whenCovered) / 1000;
       var clockWhileCovered = sceneA.currentTime;
       var framesWhileCovered = framesOf(sceneA);
       var pausedWhileCovered = sceneA.paused;
@@ -787,9 +826,12 @@ and not about this phone. Worth running it again without leaving the page.</p>
       // Read the instant it comes back, before it has a chance to catch up.
       show(sceneA);
       var clockOnReveal = sceneA.currentTime;
-      var coveredForSeconds = Math.round(performance.now() - whenCovered) / 1000;
 
-      var moved = Math.round(playedFor * 100) / 100;
+      var moved = played.seconds;
+      var picturesWhileCovered =
+        framesBefore === null || framesWhileCovered === null
+          ? null
+          : framesWhileCovered - framesBefore;
       var jumped = Math.round((clockOnReveal - clockWhileCovered) * 100) / 100;
       return {
         how: label,
@@ -798,20 +840,26 @@ and not about this phone. Worth running it again without leaving the page.</p>
         clockWentFrom: Math.round(clockBefore * 100) / 100,
         clockEndedAt: Math.round(clockWhileCovered * 100) / 100,
         clockJumpedOnRevealBy: jumped,
-        picturesDecoded:
-          framesBefore === null || framesWhileCovered === null
-            ? null
-            : framesWhileCovered - framesBefore,
+        picturesDecoded: picturesWhileCovered,
         wasPaused: pausedWhileCovered,
         // Kept apart on purpose: a crawl and a halt are different answers, and the old
         // check asked for a tenth of a second in three short windows, which scored them
         // the same.
+        laps: played.laps,
+        couldNotBeRight: played.impossible,
+        // The picture count decides alongside the clock, rather than being written down
+        // and ignored. It is the measurement that caught this check lying, and where a
+        // browser offers it, pictures appearing while the clock sits still is its own
+        // answer and not the same as stopping.
         reading:
-          pausedWhileCovered ? 'the browser paused it'
+          played.impossible ? 'the measurement came out impossible'
+          : pausedWhileCovered ? 'the browser paused it'
           : moved >= coveredForSeconds * 0.9 ? 'it kept playing'
           : moved > 0.2 ? 'it slowed down'
-          : jumped > 1 ? 'its clock froze while it ran on'
-          : 'it stopped'
+          : picturesWhileCovered !== null && picturesWhileCovered > 10
+            ? 'its clock froze while it carried on decoding'
+            : jumped > 1 ? 'its clock froze while it ran on'
+              : 'it stopped'
       };
     }
 
@@ -1001,14 +1049,21 @@ and not about this phone. Worth running it again without leaving the page.</p>
 
     // A count higher than the number of videos ever admitted means the two are being
     // measured against different things, and no reading from it would be worth having.
-    if (runningNow > keepingUp) {
+    //
+    // Written down AND acted on. The first version of this recorded the fact and then
+    // never consulted it, which is not a condition, it is a note — and the run would
+    // still have printed "works" underneath it.
+    var countIsIncoherent = runningNow > keepingUp;
+    if (countIsIncoherent) {
       report.videosAtOnce.countIsIncoherent =
         runningNow + ' were running but only ' + keepingUp + ' were ever admitted';
     }
 
     // What the stop actually was. Only the last of these is a limit on videos.
     var reading;
-    if (controlStoppedAt !== null) {
+    if (countIsIncoherent) {
+      reading = 'incoherent';
+    } else if (controlStoppedAt !== null) {
       reading = 'void';
     } else if (droppedAt === null && runningNow < keepingUp) {
       reading = 'some stopped';
@@ -1031,6 +1086,37 @@ and not about this phone. Worth running it again without leaving the page.</p>
       guards: loopGuards
     };
 
+    function whyTheCountReadsThatWay() {
+      if (reading === 'incoherent') {
+        return runningNow + ' videos were running but only ' + keepingUp + ' were ever ' +
+          'started, so the two are not measuring the same thing and neither is worth reading.';
+      }
+      if (reading === 'void') {
+        return 'Scene 1 stopped by itself after ' + controlStoppedAt + ' seconds with nothing ' +
+          'else playing, so this run cannot answer the question.';
+      }
+      if (crowdEndedBecause !== 'ran out of files to add') {
+        return 'Only ' + together + ' could be started, because ' + crowdEndedBecause +
+          '. That is a question about the connection, not about how many will play.';
+      }
+      if (reading === 'some stopped') {
+        return keepingUp + ' videos were started and ' + runningNow + ' were still running at ' +
+          'the end. Scene 1 was not one of the ones that stopped.';
+      }
+      if (reading === 'ran out of clip') {
+        return 'Scene 1 reached the end of its own clip at ' + together + ', which is not a limit.';
+      }
+      if (reading === 'starved') {
+        return 'Scene 1 ran out of data at ' + together + ', which is the connection, not a limit.';
+      }
+      if (reading === 'taken away') {
+        return together + ' videos ran together. The browser took scene 1 away when a ' +
+          droppedAt + 'th started, with ' + stoppedState.clipLeft + ' seconds of it left.';
+      }
+      return together + ' videos ran together to the end and none stopped, so this is the ' +
+        'floor, not the ceiling.';
+    }
+
     settle(
       'how-many',
       // Only a video actually taken away by the browser is a finding here. Running out
@@ -1039,27 +1125,13 @@ and not about this phone. Worth running it again without leaving the page.</p>
       // A count that stopped because a clip never downloaded is not a count. On a phone
       // this is the usual way it ends, and it once printed "1 video ran together and
       // none stopped" in green while its own record said the second one never arrived.
+      // Only two things are findings here: every video it started still running at the
+      // end, or one of them genuinely taken away by the browser. Everything else is a
+      // statement about this moment and this connection.
       reading === 'no limit found' && crowdEndedBecause === 'ran out of files to add' ? 'yes'
       : reading === 'taken away' ? 'no'
       : 'unknown',
-      reading === 'void'
-        ? 'Scene 1 stopped by itself after ' + controlStoppedAt + ' seconds with nothing ' +
-          'else playing, so this run cannot answer the question.'
-        : reading === 'some stopped'
-          ? keepingUp + ' videos were started and ' + runningNow + ' were still running at ' +
-            'the end. Scene 1 was not one of the ones that stopped.'
-          : reading === 'no limit found' && crowdEndedBecause !== 'ran out of files to add'
-            ? 'Only ' + together + ' could be started, because ' + crowdEndedBecause +
-              '. That is a question about the connection, not about how many will play.'
-            : reading === 'no limit found'
-              ? together + ' videos ran together to the end and none stopped, so this is the ' +
-                'floor, not the ceiling.'
-            : reading === 'ran out of clip'
-              ? 'Scene 1 reached the end of its own clip at ' + together + ', which is not a limit.'
-              : reading === 'starved'
-                ? 'Scene 1 ran out of data at ' + together + ', which is the connection, not a limit.'
-                : together + ' videos ran together. The browser took scene 1 away when a ' +
-                  droppedAt + 'th started, with ' + stoppedState.clipLeft + ' seconds of it left.'
+      whyTheCountReadsThatWay()
     );
 
     // 5
@@ -1101,6 +1173,18 @@ and not about this phone. Worth running it again without leaving the page.</p>
     label.textContent = 'done';
     report.filesThatDidNotArrive = loadFailures;
     report.thePageWasLeft = wentAway;
+
+    // A verdict that the rest of the run contradicts is not a verdict. Scene 1 looping
+    // unaided for a minute says the clip plays; if the start check said otherwise and
+    // did not see a refusal, the start check was asking too early.
+    var startCheck = report.checks.filter(function (c) { return c.id === 'starts-by-itself'; })[0];
+    if (startCheck && startCheck.verdict === 'no' && !howItAnsweredPlay.refused && wraps > 0) {
+      startCheck.verdict = 'unknown';
+      startCheck.detail =
+        'This said the video did not start, and then the same clip played and came round ' +
+        wraps + ' times later in the run. It was asked too early to mean anything.';
+      draw();
+    }
     checksAreRunning = false;
 
     // Three of these can only be decided while the videos are playing. If the page was
