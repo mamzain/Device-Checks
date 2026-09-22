@@ -946,7 +946,10 @@ and not about this phone. Worth running it again without leaving the page.</p>
       // Only a video actually taken away by the browser is a finding here. Running out
       // of clip, running out of data, or the counting ending early are all answers about
       // this moment and this connection, not about how many videos a phone will run.
-      reading === 'no limit found' ? 'yes'
+      // A count that stopped because a clip never downloaded is not a count. On a phone
+      // this is the usual way it ends, and it once printed "1 video ran together and
+      // none stopped" in green while its own record said the second one never arrived.
+      reading === 'no limit found' && crowdEndedBecause === 'ran out of files to add' ? 'yes'
       : reading === 'taken away' ? 'no'
       : 'unknown',
       reading === 'void'
@@ -955,9 +958,12 @@ and not about this phone. Worth running it again without leaving the page.</p>
         : reading === 'some stopped'
           ? keepingUp + ' videos were started and ' + runningNow + ' were still running at ' +
             'the end. Scene 1 was not one of the ones that stopped.'
-          : reading === 'no limit found'
-            ? together + ' videos ran together to the end and none stopped, so this is the ' +
-              'floor, not the ceiling.'
+          : reading === 'no limit found' && crowdEndedBecause !== 'ran out of files to add'
+            ? 'Only ' + together + ' could be started, because ' + crowdEndedBecause +
+              '. That is a question about the connection, not about how many will play.'
+            : reading === 'no limit found'
+              ? together + ' videos ran together to the end and none stopped, so this is the ' +
+                'floor, not the ceiling.'
             : reading === 'ran out of clip'
               ? 'Scene 1 reached the end of its own clip at ' + together + ', which is not a limit.'
               : reading === 'starved'
