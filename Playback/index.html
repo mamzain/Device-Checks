@@ -1,0 +1,1054 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>iPhone Playback Test</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --ink: #f2f0ec;
+    --dim: #9b968d;
+    --good: #7fc08a;
+    --bad: #e08a7a;
+    --wait: #c9b071;
+    --edge: #2a2a28;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0;
+    background: #121211;
+    color: var(--ink);
+    font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    padding: 16px 16px calc(24px + env(safe-area-inset-bottom));
+  }
+  h1 { font-size: 17px; font-weight: 600; margin: 0 0 2px; }
+  .warning {
+    max-width: 393px;
+    margin: 0 auto 16px;
+    padding: 10px 12px;
+    background: #2a2118;
+    border: 1px solid #5a4322;
+    border-radius: 8px;
+    color: #e0c48a;
+    font-size: 13px;
+  }
+  .sub { color: var(--dim); font-size: 13px; margin: 0 0 16px; }
+
+  /* The stage is one phone-shaped box. Every video fills it and they sit on top of
+     each other, exactly like the scenes of a finished site. */
+  #stage {
+    position: relative;
+    width: 100%;
+    max-width: 393px;
+    aspect-ratio: 9 / 16;
+    margin: 0 auto 16px;
+    background: #000;
+    border: 1px solid var(--edge);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  #stage video, #stage img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  .hidden { visibility: hidden; }
+  #label {
+    position: absolute;
+    left: 10px;
+    bottom: 10px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    background: rgba(0,0,0,.55);
+    font-size: 12px;
+    letter-spacing: .02em;
+  }
+
+  button {
+    width: 100%;
+    max-width: 393px;
+    display: block;
+    margin: 0 auto 18px;
+    padding: 14px;
+    font: inherit;
+    font-weight: 600;
+    color: #121211;
+    background: var(--ink);
+    border: 0;
+    border-radius: 8px;
+  }
+  button:disabled { opacity: .4; }
+
+  ol { list-style: none; margin: 0 auto; padding: 0; max-width: 393px; }
+  li { border-top: 1px solid var(--edge); padding: 11px 0; }
+  li:last-child { border-bottom: 1px solid var(--edge); }
+  .name { font-weight: 600; }
+  .verdict { float: right; font-weight: 600; }
+  .verdict[data-v="yes"] { color: var(--good); }
+  .verdict[data-v="no"] { color: var(--bad); }
+  .verdict[data-v="wait"] { color: var(--wait); }
+  .verdict[data-v="unknown"] { color: var(--wait); }
+  .detail { color: var(--dim); font-size: 13px; margin-top: 2px; }
+  #resultsText {
+    display: block;
+    width: 100%;
+    max-width: 393px;
+    margin: 0 auto 18px;
+    padding: 10px;
+    font: 12px/1.4 ui-monospace, Menlo, Consolas, monospace;
+    color: var(--ink);
+    background: #1c1c1a;
+    border: 1px solid var(--edge);
+    border-radius: 8px;
+  }
+
+</style>
+</head>
+<body>
+
+<h1>iPhone Playback Test</h1>
+<p class="sub">Seven questions about video on this phone. Press the button and leave it alone
+until it says done. It takes a few minutes.</p>
+<p class="warning" id="screenWarning" hidden>This phone will not let the page keep the screen
+awake. Set Auto-Lock to Never first, or the screen will lock partway through and most rows will
+go red for no reason.</p>
+
+<div id="stage">
+  <video id="sceneA" playsinline muted loop preload="auto"></video>
+  <video id="sceneB" class="hidden" playsinline muted loop preload="auto"></video>
+  <video id="move" class="hidden" playsinline muted preload="auto"></video>
+  <img id="fallbackStill" class="hidden" alt=""
+       src="../Media/Still.jpg" />
+  <div id="label">waiting</div>
+</div>
+
+<button id="go">Run the checks</button>
+
+<p class="warning" id="leftWarning" hidden>This page was covered or the screen locked while
+the checks were running. Videos stop when that happens, so any <b>No</b> below may be about that
+and not about this phone. Worth running it again without leaving the page.</p>
+
+<ol id="results"></ol>
+
+<button id="copy" hidden>Copy the results</button>
+<textarea id="resultsText" hidden readonly rows="12"></textarea>
+
+
+<script>
+(function () {
+  'use strict';
+
+  var MEDIA = '../Media/';
+  var SCENE_A = MEDIA + 'Scene 1.mp4';
+  var SCENE_B = MEDIA + 'Scene 2.mp4';
+  var MOVE    = MEDIA + 'Move 1.mp4';
+  // Used only by the "how many at once" check. Seven different files, so the phone
+  // cannot cheat by reusing one decoder.
+  var CROWD = [
+    'Spare 1.mp4',
+    'Spare 2.mp4',
+    'Spare 3.mp4',
+    'Spare 4.mp4',
+    'Spare 5.mp4',
+    'Spare 6.mp4',
+    'Spare 7.mp4'
+  ].map(function (name) { return MEDIA + name; });
+
+  var stage = document.getElementById('stage');
+  var sceneA = document.getElementById('sceneA');
+  var sceneB = document.getElementById('sceneB');
+  var move = document.getElementById('move');
+  var still = document.getElementById('fallbackStill');
+  var label = document.getElementById('label');
+  var button = document.getElementById('go');
+  var list = document.getElementById('results');
+
+  sceneA.src = encodeURI(SCENE_A);
+  sceneB.src = encodeURI(SCENE_B);
+  watchForFailure(sceneA, 'scene 1');
+  watchForFailure(sceneB, 'scene 2');
+  watchForFailure(move, 'camera move');
+  still.addEventListener('error', function () {
+    loadFailures.push({ which: 'the still picture', code: null, from: still.src });
+  });
+
+  // What the outside world reads: the Playwright run, and anyone opening the console.
+  var report = {
+    page: 'iPhone Playback',
+    // Bumped whenever a check is added or changed, so a saved run says which version of
+    // this page produced it and old runs cannot be mistaken for current ones.
+    pageVersion: '2026-09-22, seven checks',
+    touchWasNeeded: null,
+    checks: [],
+    done: false
+  };
+  window.RiskCheck = report;
+
+  var CHECKS = [
+    ['starts-by-itself', 'Video starts by itself', 'Does the first scene play without being touched?'],
+    ['two-stacked', 'Two scenes stacked', 'One playing, the next one loaded and frozen on its first frame.'],
+    ['camera-move', 'Camera move joins the next scene', 'The clip plays through and the next scene has a real frame ready.'],
+    ['hidden-keeps-playing', 'A hidden scene keeps playing',
+      'A video behind another one must not be stopped by the browser.'],
+    ['loop-comes-round', 'A looping scene comes round by itself',
+      'A background that loops must start again without being pushed.'],
+    ['how-many', 'How many videos at once', 'Adding scenes one by one until the phone stops keeping up.'],
+    ['late-clip', 'Fallback when the clip is late', 'The still picture must appear instead of a black screen.']
+  ];
+
+  CHECKS.forEach(function (row) {
+    report.checks.push({ id: row[0], name: row[1], verdict: 'wait', detail: row[2] });
+  });
+
+  function draw() {
+    list.innerHTML = '';
+    report.checks.forEach(function (check) {
+      var word =
+        check.verdict === 'yes' ? 'Works'
+        : check.verdict === 'no' ? 'No'
+        : check.verdict === 'unknown' ? 'Not tested'
+        : '...';
+      var item = document.createElement('li');
+      var head = document.createElement('div');
+      var verdict = document.createElement('span');
+      verdict.className = 'verdict';
+      verdict.setAttribute('data-v', check.verdict);
+      verdict.textContent = word;
+      var name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = check.name;
+      head.appendChild(verdict);
+      head.appendChild(name);
+      var detail = document.createElement('div');
+      detail.className = 'detail';
+      detail.textContent = check.detail;
+      item.appendChild(head);
+      item.appendChild(detail);
+      list.appendChild(item);
+    });
+  }
+
+  function settle(id, verdict, detail) {
+    var check = report.checks.filter(function (c) { return c.id === id; })[0];
+    check.verdict = verdict;
+    check.detail = detail;
+    draw();
+  }
+
+
+  // ---- keeping the screen on and getting the answers off the phone ---------
+  // The playback run takes minutes, and an iPhone that locks its screen pauses every
+  // video on the page. Without this, walking away turns a good run into a page of red.
+  var wakeLock = null;
+  var wantScreenOn = false;
+  async function keepScreenOn() {
+    wantScreenOn = true;
+    try {
+      if (navigator.wakeLock) wakeLock = await navigator.wakeLock.request('screen');
+    } catch (e) {
+      wakeLock = null;
+    }
+    return wakeLock !== null;
+  }
+  function letScreenSleep() {
+    wantScreenOn = false;
+    if (wakeLock) { try { wakeLock.release(); } catch (e) {} wakeLock = null; }
+  }
+
+  // A hold on the screen is let go the moment the page is covered, by a notification or
+  // by switching apps, and it is never given back on its own. Asked once and forgotten,
+  // it lasts until the first interruption and the screen can still lock mid-run.
+  //
+  // Only counted while the checks are actually running. Leaving the page afterwards to
+  // paste the results is not an interruption, and warning about it would teach the
+  // warning to be ignored.
+  var wentAway = false;
+  var checksAreRunning = false;
+  document.addEventListener('visibilitychange', async function () {
+    if (document.hidden) {
+      if (checksAreRunning) wentAway = true;
+      wakeLock = null;
+      return;
+    }
+    if (wantScreenOn && !wakeLock) await keepScreenOn();
+    showThatThePageWasLeft();
+  });
+
+  function showThatThePageWasLeft() {
+    // On the screen, not only in the copied text. Anyone reading a page of red rows
+    // needs to know the phone was elsewhere while they were being decided.
+    // Shown from the recorded flag once the run is over, and from the live one while it
+    // is still going.
+    var interrupted = report.done ? report.thePageWasLeft : wentAway;
+    if (!interrupted) return;
+    var banner = document.getElementById('leftWarning');
+    if (banner) banner.hidden = false;
+  }
+
+  function resultsAsText() {
+    var lines = [report.page + ' - ' + (report.pageVersion || ''), new Date().toISOString(), ''];
+    // What phone, and how big. Every finding so far has turned on a number, and a
+    // summary with no numbers in it cannot be argued with or checked afterwards.
+    lines.push('Phone: ' + navigator.userAgent);
+    lines.push('Screen: ' + window.innerWidth + ' by ' + window.innerHeight +
+               ' at ' + (window.devicePixelRatio || 1) + 'x');
+    // The recorded one, not the live one. By the time this is read, the page has often
+    // just been left and come back, which says nothing about the run.
+    if (report.thePageWasLeft) {
+      lines.push('WARNING: the page was covered or the screen locked while the checks ran.');
+    }
+    lines.push('A run that was never interrupted cannot prove it: a screen that locks does ' +
+               'not always say so.');
+    lines.push('');
+    report.checks.forEach(function (c) {
+      var word = c.verdict === 'yes' ? 'WORKS' : c.verdict === 'no' ? 'NO' : 'NOT TESTED';
+      lines.push('[' + word + '] ' + c.name);
+      lines.push('    ' + c.detail);
+    });
+    if (report.filesThatDidNotArrive && report.filesThatDidNotArrive.length) {
+      lines.push('', 'Files that did not arrive:');
+      report.filesThatDidNotArrive.forEach(function (f) {
+        lines.push('    ' + f.which + ' (' + f.from + ')');
+      });
+    }
+    // Everything the page measured, not only what it concluded from it.
+    lines.push('', '--- everything it measured ---', JSON.stringify(report, null, 1));
+    return lines.join('\n');
+  }
+
+  function offerTheResults() {
+    var copy = document.getElementById('copy');
+    if (!copy) return;
+    copy.hidden = false;
+    copy.onclick = function () {
+      var text = resultsAsText();
+      var done = function () { copy.textContent = 'Copied. Paste it anywhere.'; };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, function () { showItInstead(text); });
+      } else {
+        showItInstead(text);
+      }
+    };
+  }
+
+  function showItInstead(text) {
+    // No clipboard: put the text on the page so it can be selected by hand.
+    var box = document.getElementById('resultsText');
+    box.value = text;
+    box.hidden = false;
+    box.focus();
+    box.setSelectionRange(0, text.length);
+  }
+
+  function wait(ms) {
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  }
+
+  function ready(video, level, deadlineMs) {
+    // True once the video has enough of itself decoded; false if the wait runs out.
+    return new Promise(function (resolve) {
+      var done = false;
+      function finish(value) {
+        if (done) return;
+        done = true;
+        resolve(value);
+      }
+      if (video.readyState >= level) return finish(true);
+      var tick = setInterval(function () {
+        if (video.readyState >= level) {
+          clearInterval(tick);
+          finish(true);
+        }
+      }, 30);
+      setTimeout(function () {
+        clearInterval(tick);
+        finish(false);
+      }, deadlineMs);
+    });
+  }
+
+  function advanced(video, overMs) {
+    // True if the playhead really moved. A paused or finished video never counts.
+    var before = video.currentTime;
+    return wait(overMs).then(function () {
+      // A tenth of a second, not a hundredth. A video being taken away and restarted
+      // over and over gains a frame or two between each, and that must not read as
+      // playing normally.
+      return !video.paused && video.currentTime > before + 0.15;
+    });
+  }
+
+  // Anything that fails to arrive is written down with its address. Without this, a
+  // wrong or missing file and a slow phone produce exactly the same message.
+  var loadFailures = [];
+  function watchForFailure(video, name) {
+    video.addEventListener('error', function () {
+      loadFailures.push({
+        which: name,
+        code: video.error ? video.error.code : null,
+        from: video.currentSrc || video.src
+      });
+    });
+  }
+
+  function secondsInHand(video) {
+    // How much of the video is downloaded ahead of where it is playing. A video that
+    // stops with seconds in hand was stopped by the browser, not by a slow connection.
+    if (video.buffered.length === 0) return 0;
+    var end = video.buffered.end(video.buffered.length - 1);
+    return Math.max(0, Math.round((end - video.currentTime) * 10) / 10);
+  }
+
+  function frameIsBlack(video) {
+    // Copies the video own frame into a tiny square and looks at it. This is the frame
+    // the scene is holding, not what the page finally shows, so it answers "was a real
+    // frame ready to land on", not "did the screen flash". The screen is for the phone.
+    var tiny = document.createElement('canvas');
+    tiny.width = 16;
+    tiny.height = 16;
+    var pen = tiny.getContext('2d');
+    var data;
+    try {
+      pen.drawImage(video, 0, 0, 16, 16);
+      // This is the line that refuses, not the one above it. Drawing a video that came
+      // from another address succeeds and quietly spoils the square; it is reading the
+      // square back that is forbidden. With the guard around the drawing alone, the
+      // refusal escaped and the whole run stopped here with nothing reported.
+      data = pen.getImageData(0, 0, 16, 16).data;
+    } catch (e) {
+      return null; // could not be read, which is not the same as black
+    }
+    var total = 0;
+    for (var at = 0; at < data.length; at += 4) total += data[at] + data[at + 1] + data[at + 2];
+    // Under 8 out of 255 is black. The scene this lands on is a daylight facade. If a
+    // night clip is ever put here, a correct landing would be scored black.
+    return total / (16 * 16 * 3) < 8;
+  }
+
+  function show(which) {
+    [sceneA, sceneB, move, still].forEach(function (el) {
+      el.classList.toggle('hidden', el !== which);
+    });
+  }
+
+  // ---- check 1 --------------------------------------------------------------
+  // Asked on the page's own first moment, before anything has been touched.
+  var startedByItself = sceneA.play().then(function () { return true; }, function () { return false; });
+
+  // ---- the run --------------------------------------------------------------
+  async function run() {
+    button.disabled = true;
+    report.touchWasNeeded = !(await startedByItself);
+
+    // 1
+    label.textContent = 'scene 1';
+    show(sceneA);
+    if (report.touchWasNeeded) {
+      try { await sceneA.play(); } catch (e) { /* the check below reports it */ }
+    }
+    // Given time to arrive before it is judged. On a cold start the clip can still be
+    // downloading, and a video that has not arrived has not refused to play: reading
+    // that as "this phone will not start video on its own" is the wrong finding
+    // entirely, and it is the most likely one to happen on a phone's first visit.
+    var arrived = await ready(sceneA, 3, 30000);
+    var playing = arrived && (await advanced(sceneA, 600));
+    settle(
+      'starts-by-itself',
+      !arrived ? 'unknown' : playing && !report.touchWasNeeded ? 'yes' : 'no',
+      report.touchWasNeeded
+        ? (playing
+            ? 'Needed a touch first, then played. The site must start on the first tap.'
+            : 'Would not play even after a touch.')
+        : !arrived
+          ? 'The first clip had not arrived in time, so this was not tested.'
+          : playing
+            ? 'Played on its own, with no touch.'
+            : 'Was allowed to start but never moved.'
+    );
+
+    // 2
+    // Loaded is not the question. The question is that one is running while the other
+    // sits on its first frame, which is what a scene change is made of.
+    var bothReady = await Promise.all([ready(sceneA, 2, 30000), ready(sceneB, 2, 30000)]);
+    await new Promise(function (resolve) {
+      if (sceneB.currentTime === 0) return resolve();
+      sceneB.addEventListener('seeked', resolve, { once: true });
+      sceneB.currentTime = 0;
+      setTimeout(resolve, 2000);
+    });
+    var oneRunning = await advanced(sceneA, 500);
+    // Scene 2 is played for a moment and then put back on its first frame. A scene that
+    // was never started would sit there anyway, and that would prove nothing: the thing
+    // worth testing is a scene that has run and has been brought back.
+    try { await sceneB.play(); } catch (e) { /* the verdict below reports it */ }
+    await wait(300);
+    sceneB.pause();
+    await new Promise(function (resolve) {
+      if (sceneB.currentTime === 0) return resolve();
+      sceneB.addEventListener('seeked', resolve, { once: true });
+      sceneB.currentTime = 0;
+      setTimeout(resolve, 2000);
+    });
+    var twoHolding = sceneB.paused && sceneB.currentTime < 0.05 && sceneB.readyState >= 2;
+    settle(
+      'two-stacked',
+      !bothReady[0] || !bothReady[1] ? 'unknown' : oneRunning && twoHolding ? 'yes' : 'no',
+      !bothReady[0] || !bothReady[1]
+        ? 'One of the two never loaded: scene 1 ' + (bothReady[0] ? 'ok' : 'failed') +
+          ', scene 2 ' + (bothReady[1] ? 'ok' : 'failed') + '.'
+        : !oneRunning
+          ? 'Scene 2 loaded, but scene 1 stopped running while it did.'
+          : !twoHolding
+            ? 'Scene 1 is running, but scene 2 is not holding still on its first frame.'
+            : 'Scene 1 is playing and scene 2 is loaded behind it, frozen on frame one.'
+    );
+
+    // 3
+    label.textContent = 'camera move';
+    move.src = encodeURI(MOVE);
+    move.load();
+    var moveReady = await ready(move, 3, 30000);
+    var sceneBReady = sceneB.readyState >= 2;
+    var landedBlack = null;   // was the frame it landed on black
+    var moveRan = false;      // the clip really played, rather than sitting there
+    var reachedItsEnd = false; // it finished on its own, rather than the safety timer firing
+    var handoverGap = null;
+    if (moveReady) {
+      show(move);
+      try { await move.play(); } catch (e) { /* the checks below report it */ }
+      reachedItsEnd = await new Promise(function (resolve) {
+        move.addEventListener('ended', function () { resolve(true); }, { once: true });
+        // A clip that never ends must not hang the whole run, but it must not pass either.
+        setTimeout(function () { resolve(false); }, 15000);
+      });
+      moveRan = move.currentTime > 0.3;
+      var atEnd = performance.now();
+      label.textContent = 'scene 2';
+      sceneB.currentTime = 0;
+      show(sceneB);
+      // One screen refresh is all the handover is allowed to take.
+      await new Promise(function (resolve) { requestAnimationFrame(function () { resolve(); }); });
+      handoverGap = Math.round(performance.now() - atEnd);
+      landedBlack = frameIsBlack(sceneB);
+    }
+    settle(
+      'camera-move',
+      !moveReady || landedBlack === null
+        ? 'unknown'
+        : moveRan && reachedItsEnd && sceneBReady && landedBlack === false &&
+          handoverGap !== null && handoverGap < 100
+          ? 'yes'
+          : 'no',
+      !moveReady
+        ? 'The camera move never loaded.'
+        : !moveRan
+          ? 'The camera move loaded but never played.'
+          : !reachedItsEnd
+            ? 'The camera move started and never reached its end.'
+            : !sceneBReady
+              ? 'The move played, but scene 2 was not loaded to land on.'
+              : landedBlack === null
+                ? 'The move played, but the frame it landed on could not be read.'
+                : landedBlack
+                  ? 'The move played and landed on a black frame.'
+                  : 'Played all ' + move.duration.toFixed(1) + ' seconds and landed on a real ' +
+                    'frame of scene 2, ' + handoverGap + ' milliseconds later.'
+    );
+
+    // 4
+    // Scene 1 is the canary. Everything here turns on being able to say why it stopped,
+    // so first it is made impossible for it to stop by simply running out of clip: it is
+    // restarted by hand every time it reaches its end, and the restarts are counted. An
+    // earlier version left that to the loop setting, the loop never came round in WebKit,
+    // and a video that had quietly finished was written down as one the browser took away.
+    label.textContent = 'hidden or not';
+    var startedAt = performance.now();
+    var wraps = 0;
+    var loopsPausedThenResumed = 0;
+    var pauseEventsOnSceneOne = 0;
+    var loopsPutRight = 0;
+    var tooSoonToBeALoop = 0;
+    var eventLog = [];
+    ['pause', 'ended', 'seeking', 'seeked', 'waiting', 'stalled', 'emptied', 'suspend', 'error']
+      .forEach(function (name) {
+        sceneA.addEventListener(name, function () {
+          if (name === 'pause') pauseEventsOnSceneOne += 1;
+          eventLog.push(name + ' at ' + Math.round(performance.now() - startedAt) + 'ms');
+        });
+      });
+
+    // Every video in this check gets this, not only scene 1. Two of the extra clips are
+    // under a second long, so without it they would hit the very loop fault this page
+    // proves and be counted as playing long after they had stopped.
+    //
+    // A loop is counted by the playhead jumping backwards, which happens whether the
+    // browser pauses at the end or carries straight on. Counting pauses missed every
+    // loop Chromium made.
+    // Marked on a video just before the page rewinds it on purpose, so the page's own
+    // rewind is not counted as the video having reached its end. Two of these happen
+    // before the counting even starts, and they were being added to both engines' counts.
+    var deliberateRewind = new WeakSet();
+    function rewind(video) {
+      if (video.currentTime > 0.3) deliberateRewind.add(video);
+      if (video === sceneA) {
+        eventLog.push('the page rewound it at ' + Math.round(performance.now() - startedAt) + 'ms');
+      }
+      video.currentTime = 0;
+    }
+
+    // One record per video, so a guard that never fires can be told from one that is
+    // never even close to firing.
+    var loopGuards = [];
+
+    function keepLooping(video, isCanary, name) {
+      var lastTime = 0;
+      var everPlayed = false;
+      var lastPutRight = -Infinity;
+      var mine = { which: name, refused: 0, neededMs: null, roomEachTime: [], putRight: 0 };
+      loopGuards.push(mine);
+
+      video.addEventListener('timeupdate', function () {
+        if (video.currentTime > 0.2) everPlayed = true;
+        if (video.currentTime < lastTime - 0.3) {
+          // A rewind the page asked for is not the video reaching its end.
+          if (deliberateRewind.has(video)) deliberateRewind.delete(video);
+          else if (isCanary) wraps += 1;
+        }
+        lastTime = video.currentTime;
+      });
+
+      video.addEventListener('pause', function () {
+        // Until the clip's length is known, and until it has actually played, a pause
+        // cannot be read as a pause at the end of a loop.
+        if (!video.duration || !everPlayed) return;
+        var atAnEdge = video.currentTime <= 0.1 || video.duration - video.currentTime <= 0.1;
+        if (!atAnEdge) return;
+        // Two edge pauses inside the length of one clip cannot both be loops. The second
+        // one is something else stopping the video, and it is left alone so the checks
+        // can see it. Without this, a video taken away and restarted at the start looks
+        // like a loop every time, for ever.
+        var now = performance.now();
+        var needed = (video.duration - 0.5) * 1000;
+        mine.neededMs = Math.round(needed);
+        var room = now - lastPutRight;
+        // How much room the guard had, every time it was asked. Without this a guard
+        // that is doing real work and one that is never reached both report zero.
+        mine.roomEachTime.push(room > 99999 ? 'first' : Math.round(room));
+        if (room < needed) {
+          mine.refused += 1;
+          tooSoonToBeALoop += 1;
+          return;
+        }
+        lastPutRight = now;
+        // Given a moment first: a browser that was going to carry on does it here, and
+        // then nothing below is needed.
+        setTimeout(function () {
+          if (!video.paused) {
+            if (isCanary) loopsPausedThenResumed += 1;
+            return;
+          }
+          if (isCanary) loopsPutRight += 1;
+          mine.putRight += 1;
+          rewind(video);
+          var again = video.play();
+          if (again && again.catch) again.catch(function () {});
+        }, 80);
+      });
+    }
+
+    keepLooping(sceneA, true, 'scene 1');
+
+    // How many of a list of videos are running right now. Asked again at the moment the
+    // count is reported, never accumulated: a video that passed a check when it started
+    // says nothing about whether it is still going ten seconds later.
+    function framesOf(video) {
+      // The surest sign a video is running is that it has decoded more pictures. Not
+      // every browser offers the count, so the playhead is the fallback.
+      if (video.getVideoPlaybackQuality) return video.getVideoPlaybackQuality().totalVideoFrames;
+      if (typeof video.webkitDecodedFrameCount === 'number') return video.webkitDecodedFrameCount;
+      return null;
+    }
+
+    async function howManyRunning(videos) {
+      var before = videos.map(function (v) { return v.currentTime; });
+      var framesBefore = videos.map(framesOf);
+      // Three tenths of a second, not a half. The shortest clips here are 0.71 seconds,
+      // and over half a second one of them can come back round to within a fifth of a
+      // second of where it started. Over three tenths the smallest honest move is 0.3.
+      await wait(300);
+      return videos.filter(function (v, at) {
+        if (v.paused) return false;
+        // Either sign is enough, because neither is trustworthy alone. Some browsers
+        // report no picture count at all, and a clip under a second long goes round
+        // several times inside the half second this waits, so its playhead can land
+        // behind where it started. A stopped video shows neither sign.
+        var framesNow = framesOf(v);
+        var moreFrames =
+          framesNow !== null && framesBefore[at] !== null && framesNow > framesBefore[at];
+        return moreFrames || Math.abs(v.currentTime - before[at]) > 0.12;
+      }).length;
+    }
+
+    function howSceneOneIs() {
+      // Every raw number, kept apart on purpose. The download margin and the amount of
+      // clip left are the same figure only when the whole file is already downloaded,
+      // and that is exactly the case that reads as if the video had been starved.
+      return {
+        ended: sceneA.ended,
+        paused: sceneA.paused,
+        loop: sceneA.loop,
+        currentTime: Math.round(sceneA.currentTime * 100) / 100,
+        duration: Math.round(sceneA.duration * 100) / 100,
+        clipLeft: Math.round((sceneA.duration - sceneA.currentTime) * 100) / 100,
+        downloadMargin: secondsInHand(sceneA),
+        readyState: sceneA.readyState,
+        networkState: sceneA.networkState,
+        seekableEnd: sceneA.seekable.length > 0 ? Math.round(sceneA.seekable.end(0) * 100) / 100 : null,
+        errorCode: sceneA.error ? sceneA.error.code : null,
+        wraps: wraps,
+        loopsPutRight: loopsPutRight,
+        loopsThatPausedThenCarriedOn: loopsPausedThenResumed,
+        tooSoonToBeALoop: tooSoonToBeALoop,
+        events: eventLog.slice(-60)
+      };
+    }
+
+    // Asked twice. A video can miss a single moment while another one is settling in,
+    // and one missed moment is not the same as being stopped.
+    async function sceneOneStopped() {
+      // Three chances, because a loop being put right costs one of them.
+      if (await advanced(sceneA, 300)) return false;
+      if (await advanced(sceneA, 600)) return false;
+      return !(await advanced(sceneA, 600));
+    }
+
+    var since = function () { return Math.round(performance.now() - startedAt) / 1000; };
+
+    // ---- is a hidden video allowed to keep playing --------------------------
+    // Scene 1 has been behind scene 2 since the camera move. Before counting anything,
+    // find out whether being behind another scene is by itself enough to stop it.
+    show(sceneB);
+    if (sceneA.paused) {
+      rewind(sceneA);
+      try { await sceneA.play(); } catch (e) { /* reported below */ }
+    }
+    var hiddenSurvived = !(await sceneOneStopped()) && !(await sceneOneStopped());
+    var hiddenState = howSceneOneIs();
+    report.whileHidden = hiddenState;
+    settle(
+      'hidden-keeps-playing',
+      hiddenSurvived ? 'yes' : 'no',
+      hiddenSurvived
+        ? 'Scene 1 kept playing with scene 2 in front of it.'
+        : 'The browser stopped scene 1 as soon as scene 2 covered it, with ' +
+          hiddenState.clipLeft + ' seconds of it left.'
+    );
+
+    // Everything below needs a scene that is allowed to play, so scene 1 comes back to
+    // the front and starts again.
+    show(sceneA);
+    rewind(sceneA);
+    try { await sceneA.play(); } catch (e) { /* the control arm below will show it */ }
+
+    // ---- the crowd arm -------------------------------------------------------
+    var crowd = [];
+    // Scene 1 is the only one playing. Scene 2 is loaded but held on its first frame,
+    // so it does not count towards videos playing at once.
+    var keepingUp = 1;
+    var droppedAt = null;
+    var stoppedState = null;
+    var crowdStartedAt = performance.now();
+    // Why the adding stopped. Without this, running out of files to add and a video
+    // refusing to load look the same in the result.
+    var crowdEndedBecause = 'ran out of files to add';
+    var steps = [];
+    {
+      for (var i = 0; i < CROWD.length; i++) {
+        var stepAt = performance.now();
+        var extra = document.createElement('video');
+        extra.playsInline = true;
+        extra.muted = true;
+        extra.loop = true;
+        extra.preload = 'auto';
+        extra.className = 'hidden';
+        extra.src = encodeURI(CROWD[i]);
+        watchForFailure(extra, 'extra ' + (i + 1));
+        stage.appendChild(extra);
+        crowd.push(extra);
+        keepLooping(extra, false, 'extra ' + (i + 1));
+        // Enough to play from, and no more. Filling each clip right to the top turned
+        // this into a test of memory and made every step far slower, which moved the
+        // answer on its own.
+        var loaded = await ready(extra, 3, 30000);
+        if (!loaded) { crowdEndedBecause = 'extra ' + (i + 1) + ' never loaded'; break; }
+        try {
+          await extra.play();
+        } catch (e) {
+          crowdEndedBecause = 'extra ' + (i + 1) + ' would not start';
+          break;
+        }
+        var stillMoving = await advanced(extra, 500);
+        if (!stillMoving) {
+          crowdEndedBecause = 'extra ' + (i + 1) + ' never moved';
+          // Everything about it at that moment, so this does not have to be guessed at.
+          report.theOneThatNeverMoved = {
+            which: 'extra ' + (i + 1),
+            paused: extra.paused,
+            ended: extra.ended,
+            currentTime: Math.round(extra.currentTime * 100) / 100,
+            duration: Math.round((extra.duration || 0) * 100) / 100,
+            readyState: extra.readyState,
+            networkState: extra.networkState,
+            movedBy: Math.round((extra.currentTime) * 1000) / 1000,
+            theTestWanted: 'more than 0.15 seconds in half a second'
+          };
+          break;
+        }
+        keepingUp += 1;
+        label.textContent = keepingUp + ' at once';
+        steps.push({
+          started: keepingUp,
+          tookSeconds: Math.round(performance.now() - stepAt) / 1000,
+          loopsPutRightSoFar: loopsPutRight,
+          tooSoonSoFar: tooSoonToBeALoop
+        });
+        // The newest video playing is not the question. The question is whether the
+        // earlier ones are still running, because those are dropped first.
+        if (await sceneOneStopped()) {
+          droppedAt = keepingUp;
+          stoppedState = howSceneOneIs();
+          break;
+        }
+      }
+    }
+    // The number that gets reported. Counted now, across everything, not added up from
+    // videos that were once seen to start.
+    var runningNow = await howManyRunning([sceneA].concat(crowd));
+    report.eachVideoAtTheEnd = [sceneA].concat(crowd).map(function (v, at) {
+      var guard = loopGuards.filter(function (g) {
+        return g.which === (at === 0 ? 'scene 1' : 'extra ' + at);
+      })[0];
+      return {
+        which: at === 0 ? 'scene 1' : 'extra ' + at,
+        paused: v.paused,
+        ended: v.ended,
+        currentTime: Math.round(v.currentTime * 100) / 100,
+        duration: Math.round((v.duration || 0) * 100) / 100,
+        // A video that is only moving because its own watchdog keeps restarting it is
+        // not the same as one the browser is running, and the count cannot tell them
+        // apart on its own.
+        pushesItNeeded: guard ? guard.putRight : null,
+        // Why it is not running, where that can be told. A video caught by the loop
+        // fault sits at one end of its clip; a video starved of data sits in the
+        // middle of it, still unpaused. On a phone over the internet both happen, and
+        // the difference cannot be recovered afterwards from a count.
+        stoppedBecause: !v.paused
+          ? null
+          : v.currentTime <= 0.1 || (v.duration || 0) - v.currentTime <= 0.1
+            ? 'caught at the end of a loop'
+            : 'stopped in the middle of its clip'
+      };
+    });
+    crowd.forEach(function (el) { el.pause(); el.removeAttribute('src'); el.load(); el.remove(); });
+
+    var crowdSeconds = Math.round(performance.now() - crowdStartedAt) / 1000;
+    var together = droppedAt === null ? runningNow : droppedAt - 1;
+    report.videosStartedVersusRunning = { started: keepingUp, stillRunning: runningNow };
+    report.videosAtOnce = {
+      together: together,
+      droppedAt: droppedAt,
+      crowdSeconds: crowdSeconds,
+      steps: steps,
+      endedBecause: crowdEndedBecause,
+      sceneOneWhenItStopped: stoppedState
+    };
+
+    // ---- the control arm -----------------------------------------------------
+    // Scene 1 alone, nothing else playing, for half again as long as the counting just
+    // took. If it stops here then whatever the counting found was about time passing and
+    // not about how many videos a phone will run, and the count is thrown away.
+    //
+    // It runs after the counting, not before, because its length is taken from how long
+    // the counting actually took rather than from a guess.
+    label.textContent = 'scene 1 alone';
+    show(sceneA);
+    rewind(sceneA);
+    try { await sceneA.play(); } catch (e) { /* the verdict below will show it */ }
+    var controlFor = Math.max(15000, crowdSeconds * 1500);
+    var controlFrom = performance.now();
+    var controlStoppedAt = null;
+    while (performance.now() - controlFrom < controlFor) {
+      if (await sceneOneStopped()) {
+        controlStoppedAt = Math.round(performance.now() - controlFrom) / 1000;
+        break;
+      }
+    }
+    report.controlArm = {
+      ranForSeconds: Math.round(performance.now() - controlFrom) / 1000,
+      askedForSeconds: controlFor / 1000,
+      stoppedAtSeconds: controlStoppedAt,
+      sceneOne: howSceneOneIs()
+    };
+
+    // ---- does a loop come round by itself ------------------------------------
+    // By now scene 1 has reached its end several times, so there is something to report.
+    // Nothing seen is not a pass. A clip that never reached its end has not been asked
+    // the question, and saying "works" there is how a check stops being worth having.
+    settle(
+      'loop-comes-round',
+      wraps === 0 ? 'unknown' : loopsPutRight > 0 ? 'no' : 'yes',
+      wraps === 0
+        ? 'Scene 1 never reached its end in the time given, so this was not tested.'
+        : loopsPutRight > 0
+          ? 'Scene 1 stopped at its end and had to be started again by hand ' + loopsPutRight +
+            ' times. A scene that loops cannot be left to the browser here.'
+          : 'Scene 1 reached its end ' + wraps + ' times and never paused there once.'
+    );
+
+    // A count higher than the number of videos ever admitted means the two are being
+    // measured against different things, and no reading from it would be worth having.
+    if (runningNow > keepingUp) {
+      report.videosAtOnce.countIsIncoherent =
+        runningNow + ' were running but only ' + keepingUp + ' were ever admitted';
+    }
+
+    // What the stop actually was. Only the last of these is a limit on videos.
+    var reading;
+    if (controlStoppedAt !== null) {
+      reading = 'void';
+    } else if (droppedAt === null && runningNow < keepingUp) {
+      reading = 'some stopped';
+    } else if (droppedAt === null) {
+      reading = 'no limit found';
+    } else if (stoppedState.ended || stoppedState.clipLeft <= 0.05) {
+      reading = 'ran out of clip';
+    } else if (!stoppedState.paused) {
+      reading = 'starved';
+    } else {
+      reading = 'taken away';
+    }
+    report.videosAtOnce.reading = reading;
+    report.loopBehaviour = {
+      loopsSeen: wraps,
+      timesSceneOnePaused: pauseEventsOnSceneOne,
+      loopsThatPausedThenCarriedOn: loopsPausedThenResumed,
+      loopsPutRightByHand: loopsPutRight,
+      tooSoonToBeALoop: tooSoonToBeALoop,
+      guards: loopGuards
+    };
+
+    settle(
+      'how-many',
+      // Only a video actually taken away by the browser is a finding here. Running out
+      // of clip, running out of data, or the counting ending early are all answers about
+      // this moment and this connection, not about how many videos a phone will run.
+      reading === 'no limit found' ? 'yes'
+      : reading === 'taken away' ? 'no'
+      : 'unknown',
+      reading === 'void'
+        ? 'Scene 1 stopped by itself after ' + controlStoppedAt + ' seconds with nothing ' +
+          'else playing, so this run cannot answer the question.'
+        : reading === 'some stopped'
+          ? keepingUp + ' videos were started and ' + runningNow + ' were still running at ' +
+            'the end. Scene 1 was not one of the ones that stopped.'
+          : reading === 'no limit found'
+            ? together + ' videos ran together to the end and none stopped, so this is the ' +
+              'floor, not the ceiling.'
+            : reading === 'ran out of clip'
+              ? 'Scene 1 reached the end of its own clip at ' + together + ', which is not a limit.'
+              : reading === 'starved'
+                ? 'Scene 1 ran out of data at ' + together + ', which is the connection, not a limit.'
+                : together + ' videos ran together. The browser took scene 1 away when a ' +
+                  droppedAt + 'th started, with ' + stoppedState.clipLeft + ' seconds of it left.'
+    );
+
+    // 5
+    label.textContent = 'late clip';
+    var late = document.createElement('video');
+    late.playsInline = true;
+    late.muted = true;
+    late.preload = 'auto';
+    // A fresh address, so it has to be fetched again rather than taken from memory,
+    // and 150 milliseconds is far too little time for that.
+    // The test server holds this one back on purpose. Served by anything else it will
+    // simply arrive, and the check then says it was not tested rather than pretending.
+    late.src = encodeURI(MOVE) + '?fresh=' + Date.now() + '&holdBackMs=3000';
+    stage.appendChild(late);
+    var inTime = await ready(late, 3, 150);
+    if (!inTime) {
+      show(still);
+      label.textContent = 'still picture';
+    }
+    var stillShowing = !still.classList.contains('hidden') && still.naturalWidth > 0;
+    late.pause();
+    late.removeAttribute('src');
+    late.load();
+    late.remove();
+    settle(
+      'late-clip',
+      inTime ? 'unknown' : stillShowing ? 'yes' : still.naturalWidth === 0 ? 'unknown' : 'no',
+      inTime
+        ? 'The clip arrived inside 150 milliseconds, so the fallback was never tested.'
+        : stillShowing
+          ? 'The clip was late and the still picture took its place.'
+          : still.naturalWidth === 0
+            ? 'The still picture itself never arrived, so this could not be tested.'
+            : 'The clip was late and nothing took its place.'
+    );
+
+    await wait(400);
+    show(sceneB);
+    label.textContent = 'done';
+    report.filesThatDidNotArrive = loadFailures;
+    report.thePageWasLeft = wentAway;
+    checksAreRunning = false;
+
+    // Three of these can only be decided while the videos are playing. If the page was
+    // covered at any point, they were decided partly about a paused phone, and a red row
+    // there would be read as a finding about the phone. Better to say it was not tested.
+    if (wentAway) {
+      ['hidden-keeps-playing', 'loop-comes-round', 'how-many'].forEach(function (id) {
+        var check = report.checks.filter(function (c) { return c.id === id; })[0];
+        if (!check) return;
+        // Green too, not only red. A clean row nobody questions is the worse of the two
+        // to leave standing on a run that was interrupted.
+        check.verdict = 'unknown';
+        // The measurement stays. Taking the number away and leaving only the caveat
+        // loses the one thing worth keeping from the run.
+        check.detail = check.detail + ' The page was covered while this was being decided.';
+      });
+      draw();
+    }
+
+    report.done = true;
+    letScreenSleep();
+    showThatThePageWasLeft();
+    offerTheResults();
+    button.disabled = false;
+    button.textContent = 'Run again';
+  }
+
+  draw();
+  button.addEventListener('click', async function () {
+    wentAway = false;
+    checksAreRunning = true;
+    var screenHeld = await keepScreenOn();
+    if (!screenHeld) {
+      document.getElementById('screenWarning').hidden = false;
+    }
+    report.done = false;
+    report.checks.forEach(function (c, i) {
+      c.verdict = 'wait';
+      c.detail = CHECKS[i][2];
+    });
+    draw();
+    run();
+  });
+})();
+</script>
+</body>
+</html>

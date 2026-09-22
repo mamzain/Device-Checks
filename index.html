@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Device Checks</title>
+<style>
+  :root { color-scheme: dark; --ink: #f2f0ec; --dim: #9b968d; --edge: #2a2a28; --lift: #1c1c1a; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0;
+    background: #121211;
+    color: var(--ink);
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    padding: 28px 16px calc(32px + env(safe-area-inset-bottom));
+  }
+  .page { max-width: 393px; margin: 0 auto; }
+  h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
+  .sub { color: var(--dim); font-size: 14px; margin: 0 0 22px; }
+  a.card {
+    display: block;
+    padding: 16px;
+    margin-bottom: 12px;
+    background: var(--lift);
+    border: 1px solid var(--edge);
+    border-radius: 10px;
+    color: var(--ink);
+    text-decoration: none;
+  }
+  a.card b { display: block; font-size: 17px; margin-bottom: 3px; }
+  a.card span { color: var(--dim); font-size: 14px; }
+  .warning {
+    margin: 0 0 20px;
+    padding: 12px;
+    background: #2a2118;
+    border: 1px solid #5a4322;
+    border-radius: 8px;
+    color: #e0c48a;
+    font-size: 14px;
+  }
+  .warning b { font-weight: 600; }
+  h2 { font-size: 14px; font-weight: 600; margin: 26px 0 6px; }
+  .note { color: var(--dim); font-size: 14px; margin: 0 0 10px; }
+  .note b { color: var(--ink); font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="page">
+
+<h1>Device Checks</h1>
+<p class="sub">Two test pages. Open each one, press its button, and read the list.</p>
+
+<p class="warning">
+  <b>Set Auto-Lock to Never before you start.</b> Settings, Display &amp; Brightness, Auto-Lock.
+  The playback page takes a few minutes, and a phone that locks its screen pauses every video on
+  the page, which turns a good run into a page of red. The page tries to hold the screen awake by
+  itself and will warn you if it cannot.
+</p>
+
+<a class="card" href="Playback/">
+  <b>Video playback</b>
+  <span>Seven questions about how this phone plays video. A few minutes. Leave it alone while it
+  runs.</span>
+</a>
+
+<a class="card" href="Mirroring/">
+  <b>Right-to-left mirroring</b>
+  <span>Six questions about English and Arabic. Answers itself straight away.</span>
+</a>
+
+<h2>Reading the results</h2>
+<p class="note">
+  Green <b>Works</b> and red <b>No</b> are findings. Amber <b>Not tested</b> is not: it means a
+  clip did not arrive in time, or the thing being checked never happened. Five of the seven
+  playback rows can say it.
+</p>
+<p class="note">
+  Each page has a <b>Copy the results</b> button when it finishes. Copy and send them rather than
+  typing them out — the detail lines matter more than the verdicts.
+</p>
+
+<h2>Worth doing twice</h2>
+<p class="note">
+  Once normally, and once with <b>Low Power Mode</b> switched on. That is the one thing no desktop
+  browser can answer, and it is the case where iOS refuses to start video at all.
+</p>
+
+</div>
+</body>
+</html>
